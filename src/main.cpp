@@ -254,8 +254,9 @@ static std::wstring ChainSummary() {
                L"  ・也可以直接從剪貼簿貼上 PEM 文字（Ctrl+V）\r\n\r\n"
                L"載入後會自動依「終端 → 中繼 → 根」排序。缺少的中繼憑證可以按「補齊並驗證」，\r\n"
                L"由 Windows 從本機憑證存放區或網路（AIA）補上，並檢查信任與撤銷狀態。\r\n\r\n"
-               L"要申請新憑證：按「產生 CSR...」(Ctrl+N)，會同時產生私鑰。把 CSR 送給 CA，\r\n"
-               L"拿到簽發的憑證後拖進來，會自動配對私鑰並組成憑證鏈。";
+               L"要申請新憑證：按「產生 CSR / 自簽...」(Ctrl+N)，會同時產生私鑰。把 CSR 送給 CA，\r\n"
+               L"拿到簽發的憑證後拖進來，會自動配對私鑰並組成憑證鏈。\r\n"
+               L"測試或內部用途也可以直接產生自簽憑證，再匯出成 PFX 或 Tomcat 用的 Java KeyStore。";
     }
     s += L"【憑證鏈】\r\n";
     int n = 0;
@@ -729,6 +730,34 @@ static void OnExport(int cmd) {
             SecureZeroMemory(out.data(), out.size());
             break;
         }
+        case ID_EXP_JKS: {
+            if (g_order.empty()) { Info(L"尚未載入憑證。"); return; }
+            const KeyItem* key = LeafKey();
+            if (!key && Ask(L"終端憑證沒有對應的私鑰。\n\n要匯出成只含憑證的信任存放區（truststore）嗎？\n（給 Tomcat 當伺服器憑證用的話，需要先載入私鑰。）",
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+            if (!ConfirmChain()) return;
+            auto chain = Chain(IncludeRoot());
+            PwdData data;
+            data.caption = L"設定 KeyStore 密碼";
+            data.prompt = key ? L"包含 " + std::to_wstring(chain.size()) + L" 張憑證 + 私鑰，別名為 tomcat。私鑰密碼與 KeyStore 密碼相同（至少 6 個字元）。"
+                              : L"包含 " + std::to_wstring(chain.size()) + L" 張信任憑證（至少 6 個字元）。";
+            data.showAes = false;
+            data.allowEmpty = false;
+            for (;;) {
+                if (DialogBoxParamW(g_inst, MAKEINTRESOURCEW(IDD_PASSWORD_NEW), g_hwnd, PwdProc, (LPARAM)&data) != IDOK) return;
+                if (data.password.size() >= 6) break;
+                Info(L"Java KeyStore 的密碼至少要 6 個字元。");
+            }
+            Bytes out;
+            bool ok = ExportJks(chain, key, data.password, L"tomcat", out, err);
+            SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
+            if (!ok) { Error(err); return; }
+            if (SaveDialog(L"匯出 Java KeyStore", L"Java KeyStore (*.keystore;*.jks)\0*.keystore;*.jks\0所有檔案 (*.*)\0*.*\0", L"keystore",
+                           key ? L"tomcat.keystore" : L"truststore.jks", path))
+                SaveBytes(path, out, L"Java KeyStore");
+            SecureZeroMemory(out.data(), out.size());
+            break;
+        }
         case ID_EXP_KEY_ENC: {
             const KeyItem* key = LeafKey();
             int sk = SelectedKey();
@@ -801,6 +830,8 @@ struct CsrDlgData {
     bool cnToSan = true;
     int keyChoice = 0;          // 0..4 = 新金鑰種類，>= 5 為 g_ws.keys[keyChoice - 5]
     std::wstring password;
+    bool selfSigned = false;    // true = 產生自簽憑證，false = 產生 CSR
+    int days = 365;
 };
 
 static const wchar_t* kNewKeyText[] = {
@@ -869,16 +900,35 @@ static INT_PTR CALLBACK CsrProc(HWND d, UINT m, WPARAM w, LPARAM l) {
             SetDlgItemTextW(d, IDC_CSR_SAN, data->sanText.c_str());
             SendDlgItemMessageW(d, IDC_CSR_C, EM_LIMITTEXT, 2, 0);
             CheckDlgButton(d, IDC_CSR_CNSAN, data->cnToSan ? BST_CHECKED : BST_UNCHECKED);
+            CheckRadioButton(d, IDC_CSR_MODE_CSR, IDC_CSR_MODE_SELF, data->selfSigned ? IDC_CSR_MODE_SELF : IDC_CSR_MODE_CSR);
+            SetDlgItemInt(d, IDC_CSR_DAYS, (UINT)data->days, FALSE);
+            SendDlgItemMessageW(d, IDC_CSR_DAYS, EM_LIMITTEXT, 5, 0);
+            EnableWindow(GetDlgItem(d, IDC_CSR_DAYS), data->selfSigned);
             SetFocus(GetDlgItem(d, IDC_CSR_CN));
             return FALSE;
         }
         case WM_COMMAND:
+            if (LOWORD(w) == IDC_CSR_MODE_CSR || LOWORD(w) == IDC_CSR_MODE_SELF) {
+                bool self = IsDlgButtonChecked(d, IDC_CSR_MODE_SELF) == BST_CHECKED;
+                EnableWindow(GetDlgItem(d, IDC_CSR_DAYS), self);
+                return TRUE;
+            }
             if (LOWORD(w) == IDOK) {
                 std::wstring p1 = GetText(d, IDC_CSR_PWD1), p2 = GetText(d, IDC_CSR_PWD2);
                 if (p1 != p2) {
                     MessageBoxW(d, L"兩次輸入的私鑰密碼不一致。", kTitle, MB_OK | MB_ICONWARNING);
                     return TRUE;
                 }
+                bool self = IsDlgButtonChecked(d, IDC_CSR_MODE_SELF) == BST_CHECKED;
+                BOOL daysOk = FALSE;
+                UINT days = GetDlgItemInt(d, IDC_CSR_DAYS, &daysOk, FALSE);
+                if (self && (!daysOk || days < 1 || days > 36500)) {
+                    MessageBoxW(d, L"有效天數請輸入 1 到 36500 之間的數字。", kTitle, MB_OK | MB_ICONWARNING);
+                    SetFocus(GetDlgItem(d, IDC_CSR_DAYS));
+                    return TRUE;
+                }
+                data->selfSigned = self;
+                if (self) data->days = (int)days;
                 if (GetText(d, IDC_CSR_CN).find_first_not_of(L" \t") == std::wstring::npos) {
                     MessageBoxW(d, L"請輸入一般名稱（CN），通常是網站的網域名稱，例如 www.example.com。", kTitle, MB_OK | MB_ICONWARNING);
                     SetFocus(GetDlgItem(d, IDC_CSR_CN));
@@ -916,6 +966,103 @@ static bool LooksLikeHostName(const std::wstring& s) {
     return true;
 }
 
+static std::wstring FileNameOf(const std::wstring& path) { return path.substr(path.find_last_of(L'\\') + 1); }
+
+// 把新私鑰存在 nearPath 旁邊（同名 .key），有密碼就加密；回傳實際路徑，沒存則回傳空字串
+static std::wstring SaveNewKey(const std::wstring& nearPath, const std::wstring& base, const Bytes& key,
+                               const std::wstring& password, const wchar_t* skipWarning, std::wstring& msg) {
+    std::wstring keyPath = nearPath.substr(0, nearPath.find_last_of(L'.')) + L".key";
+    if (GetFileAttributesW(keyPath.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        Ask(L"檔案已存在：\n" + keyPath + L"\n\n要覆寫嗎？選「否」可另選位置。", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+        while (!SaveDialog(L"儲存私鑰", kKeyFilter, L"key", base + L".key", keyPath)) {
+            if (Ask(skipWarning, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) return {};
+        }
+    }
+    std::string keyPem;
+    std::wstring err;
+    bool encrypted = !password.empty();
+    if (encrypted) KeyToEncryptedPem(key, password, keyPem, err);
+    else keyPem = KeyToPem(key);
+    bool ok = WriteAll(keyPath, keyPem.data(), keyPem.size());
+    SecureZeroMemory(keyPem.data(), keyPem.size());
+    if (!ok) {
+        Error(L"無法寫入私鑰檔案：" + keyPath);
+        return {};
+    }
+    msg += L"\n私鑰（" + std::wstring(encrypted ? L"已加密" : L"未加密，請妥善保管") + L"）：\n" + keyPath + L"\n";
+    return keyPath;
+}
+
+static void FinishSelfSigned(CsrDlgData& data, const Bytes& der, Bytes& key, const std::wstring& base) {
+    bool reuse = data.req.existingKey != nullptr;
+    CertPtr cert = CertFromDer(der.data(), der.size());
+    std::wstring certPath, keyPath, msg = L"已產生自簽憑證（有效 " + std::to_wstring(data.days) + L" 天）";
+    if (SaveDialog(L"儲存自簽憑證（可按取消，稍後再從「匯出」選單匯出）",
+                   L"憑證 PEM (*.crt;*.pem)\0*.crt;*.pem\0所有檔案 (*.*)\0*.*\0", L"crt", base + L".crt", certPath)) {
+        std::string pem = CertToPem(cert.get());
+        if (WriteAll(certPath, pem.data(), pem.size())) {
+            msg += L"：\n" + certPath + L"\n";
+            if (!reuse) keyPath = SaveNewKey(certPath, base, key, data.password, L"不儲存私鑰的話，稍後仍可從「匯出」選單匯出。確定現在不儲存嗎？", msg);
+        } else {
+            Error(L"無法寫入檔案：" + certPath);
+            certPath.clear();
+        }
+    } else {
+        msg += L"，尚未存檔。\n";
+    }
+    std::wstring err;
+    if (!reuse) g_ws.AddKey(key, L"新產生（" + (keyPath.empty() ? std::wstring(L"未存檔") : FileNameOf(keyPath)) + L"）", err);
+    g_ws.AddCert(cert, L"自簽（" + (certPath.empty() ? std::wstring(L"未存檔") : FileNameOf(certPath)) + L"）");
+    g_ws.MatchKeys();
+    g_ws.leafOverride = cert.get();   // 清單裡有其他憑證時，仍以新憑證為終端憑證
+    SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
+    SecureZeroMemory(key.data(), key.size());
+    Refresh(false);
+    msg += L"\n憑證和私鑰已載入到這個工具，可以直接從「匯出」選單匯出成 PFX、Java KeyStore（Tomcat）、fullchain PEM 等格式。"
+           L"\n\n自簽憑證不受任何瀏覽器信任；要在用戶端電腦把它匯入「受信任的根憑證授權單位」，連線時才不會出現警告。";
+    Info(msg);
+    SetStatus(L"已產生自簽憑證：" + CertDisplayName(cert.get()));
+}
+
+// ---------------------------------------------------------------------------
+// 關於
+// ---------------------------------------------------------------------------
+static const wchar_t* kVersion = L"1.1.0";
+static const wchar_t* kRepoUrl = L"https://github.com/leoyu0607/CertChainTool";
+static const wchar_t* kCoffeeUrl = L"https://buymeacoffee.com/leoyu0607";
+
+static HRESULT CALLBACK AboutCallback(HWND h, UINT n, WPARAM, LPARAM l, LONG_PTR) {
+    if (n == TDN_HYPERLINK_CLICKED) {
+        auto url = (LPCWSTR)l;
+        if (wcscmp(url, kRepoUrl) == 0 || wcscmp(url, kCoffeeUrl) == 0)   // 只開自己的連結
+            ShellExecuteW(h, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    return S_OK;
+}
+
+static void OnAbout() {
+    std::wstring title = std::wstring(kTitle) + L" " + kVersion;
+    std::wstring footer = L"<a href=\"" + std::wstring(kRepoUrl) + L"\">GitHub：原始碼、更新與問題回報</a>\n"
+                          L"覺得好用的話，歡迎 <a href=\"" + std::wstring(kCoffeeUrl) + L"\">☕ Buy Me a Coffee</a> 請我喝杯咖啡！";
+    TASKDIALOGCONFIG tc = {sizeof(tc)};
+    tc.hwndParent = g_hwnd;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    tc.dwCommonButtons = TDCBF_OK_BUTTON;
+    tc.pszWindowTitle = L"關於";
+    tc.hMainIcon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    tc.pszMainInstruction = title.c_str();
+    tc.pszContent = L"合併、排序、補齊與驗證憑證鏈；產生 CSR 與自簽憑證；"
+                    L"在 PEM / DER / P7B / PFX / Java KeyStore 之間轉換。\n\n"
+                    L"只使用 Windows 內建的 CryptoAPI / CNG，不需要 OpenSSL。"
+                    L"私鑰只存在記憶體中，不會寫入 Windows 憑證存放區。";
+    tc.pszFooter = footer.c_str();
+    tc.pfCallback = AboutCallback;
+    tc.cxWidth = 270;   // DLU
+    TaskDialogIndirect(&tc, nullptr, nullptr, nullptr);
+    if (tc.hMainIcon) DestroyIcon(tc.hMainIcon);
+}
+
 static void OnCsr() {
     CsrDlgData data;
     int sel = SelectedCert();
@@ -945,15 +1092,20 @@ static void OnCsr() {
 
         std::wstring err;
         HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
-        bool ok = GenerateCsr(data.req, csr, key, err);
+        bool ok = data.selfSigned ? GenerateSelfSigned(data.req, data.days, csr, key, err) : GenerateCsr(data.req, csr, key, err);
         SetCursor(old);
         if (ok) break;
         Error(err);   // 回到對話框修正
     }
     bool reuse = data.req.existingKey != nullptr;
+    std::wstring base = SafeFileName(data.req.cn);
+
+    if (data.selfSigned) {
+        FinishSelfSigned(data, csr, key, base);
+        return;
+    }
 
     std::wstring csrPath;
-    std::wstring base = SafeFileName(data.req.cn);
     while (!SaveDialog(L"儲存 CSR", L"CSR (*.csr)\0*.csr\0PEM (*.pem)\0*.pem\0所有檔案 (*.*)\0*.*\0", L"csr", base + L".csr", csrPath)) {
         if (reuse || Ask(L"沒有儲存 CSR，新產生的私鑰也會一起丟棄。確定要放棄嗎？", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
             SecureZeroMemory(key.data(), key.size());
@@ -968,31 +1120,9 @@ static void OnCsr() {
 
     std::wstring msg = L"已產生 CSR：\n" + csrPath + L"\n";
     if (!reuse) {
-        // 私鑰預設存在 CSR 旁邊，同名 .key
-        std::wstring keyPath = csrPath.substr(0, csrPath.find_last_of(L'.')) + L".key";
-        if (GetFileAttributesW(keyPath.c_str()) != INVALID_FILE_ATTRIBUTES &&
-            Ask(L"檔案已存在：\n" + keyPath + L"\n\n要覆寫嗎？選「否」可另選位置。", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
-            while (!SaveDialog(L"儲存私鑰", kKeyFilter, L"key", base + L".key", keyPath)) {
-                if (Ask(L"不儲存私鑰的話，CA 簽發的憑證將無法使用。確定不儲存嗎？", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
-                    keyPath.clear();
-                    break;
-                }
-            }
-        }
-        if (!keyPath.empty()) {
-            std::string keyPem;
-            std::wstring err;
-            bool encrypted = !data.password.empty();
-            if (encrypted) KeyToEncryptedPem(key, data.password, keyPem, err);
-            else keyPem = KeyToPem(key);
-            if (WriteAll(keyPath, keyPem.data(), keyPem.size()))
-                msg += L"\n私鑰（" + std::wstring(encrypted ? L"已加密" : L"未加密，請妥善保管") + L"）：\n" + keyPath + L"\n";
-            else
-                Error(L"無法寫入私鑰檔案：" + keyPath);
-            SecureZeroMemory(keyPem.data(), keyPem.size());
-        }
+        std::wstring keyPath = SaveNewKey(csrPath, base, key, data.password, L"不儲存私鑰的話，CA 簽發的憑證將無法使用。確定不儲存嗎？", msg);
         std::wstring err;
-        g_ws.AddKey(key, L"新產生（" + (keyPath.empty() ? std::wstring(L"未存檔") : keyPath.substr(keyPath.find_last_of(L'\\') + 1)) + L"）", err);
+        g_ws.AddKey(key, L"新產生（" + (keyPath.empty() ? std::wstring(L"未存檔") : FileNameOf(keyPath)) + L"）", err);
     }
     SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
     SecureZeroMemory(key.data(), key.size());
@@ -1032,7 +1162,7 @@ static void ShowContextMenu(POINT pt) {
         AppendMenuW(m, MF_STRING, ID_EXP_SEL_DER, L"匯出這張憑證（DER）(&D)...");
         if (g_ws.certs[p].keyIndex >= 0) AppendMenuW(m, MF_STRING, ID_EXP_SEL_KEY, L"匯出它的私鑰（PEM）(&K)...");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(m, MF_STRING, ID_TOOLS_CSR, L"以這張憑證的內容產生 CSR（續約）(&G)...");
+        AppendMenuW(m, MF_STRING, ID_TOOLS_CSR, L"以這張憑證的內容產生 CSR 或自簽憑證(&G)...");
     } else {
         AppendMenuW(m, MF_STRING, ID_EXP_SEL_KEY, L"匯出這把私鑰（PEM）(&K)...");
     }
@@ -1045,7 +1175,7 @@ static void ShowContextMenu(POINT pt) {
 // ---------------------------------------------------------------------------
 // 版面
 // ---------------------------------------------------------------------------
-static const wchar_t* kButtonText[7] = {L"開啟檔案...", L"貼上 PEM", L"補齊並驗證", L"匯出 ▾", L"移除", L"全部清除", L"產生 CSR..."};
+static const wchar_t* kButtonText[7] = {L"開啟檔案...", L"貼上 PEM", L"補齊並驗證", L"匯出 ▾", L"移除", L"全部清除", L"產生 CSR / 自簽..."};
 static const int kButtonId[7] = {IDC_BTN_OPEN, IDC_BTN_PASTE, IDC_BTN_VALIDATE, IDC_BTN_EXPORT, IDC_BTN_REMOVE, IDC_BTN_CLEAR, IDC_BTN_CSR};
 // 畫面上的排列順序（索引對應 g_buttons）；負數代表前面留空
 static const int kButtonOrder[] = {0, 1, 2, 3, -1, 6, -1, 4, 5};
@@ -1201,12 +1331,7 @@ static void OnCommand(int id) {
         case ID_EDIT_AUTOLEAF: OnSetLeaf(true); break;
         case ID_TOOLS_VIEW: OnView(); break;
         case ID_FILE_EXIT: DestroyWindow(g_hwnd); break;
-        case ID_HELP_ABOUT:
-            Info(L"憑證鏈工具 1.0\n\n"
-                 L"合併、排序、補齊與驗證憑證鏈，並在 PEM / DER / P7B / PFX 之間轉換。\n"
-                 L"只使用 Windows 內建的 CryptoAPI / CNG，不需要 OpenSSL。\n\n"
-                 L"私鑰只存在記憶體中，不會寫入 Windows 憑證存放區。");
-            break;
+        case ID_HELP_ABOUT: OnAbout(); break;
         case IDOK:   // IsDialogMessage 會把 Enter 轉成 IDOK
             if (GetFocus() == g_list) OnView();
             break;
@@ -1264,7 +1389,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             bool any = !g_order.empty();
             bool key = LeafKey() != nullptr;
             bool sel = SelectedCert() >= 0;
-            for (int id : {ID_EXP_FULLCHAIN, ID_EXP_INTERMEDIATES, ID_EXP_P7B, ID_EXP_PFX, ID_EXP_COPY_FULLCHAIN, ID_TOOLS_VALIDATE})
+            for (int id : {ID_EXP_FULLCHAIN, ID_EXP_INTERMEDIATES, ID_EXP_P7B, ID_EXP_PFX, ID_EXP_JKS, ID_EXP_COPY_FULLCHAIN, ID_TOOLS_VALIDATE})
                 EnableMenuItem(m, id, MF_BYCOMMAND | (any && !(id == ID_TOOLS_VALIDATE && g_busy) ? MF_ENABLED : MF_GRAYED));
             for (int id : {ID_EXP_CHAIN_KEY, ID_EXP_KEY_PKCS8, ID_EXP_KEY_PKCS1, ID_EXP_KEY_ENC})
                 EnableMenuItem(m, id, MF_BYCOMMAND | (key ? MF_ENABLED : MF_GRAYED));

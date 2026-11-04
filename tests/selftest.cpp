@@ -295,6 +295,66 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
+    wprintf(L"\n== 自簽憑證 ==\n");
+    {
+        struct { KeyType t; const wchar_t* name; } types[] = {{KeyType::Rsa2048, L"rsa"}, {KeyType::EcP256, L"ec"}};
+        for (auto& t : types) {
+            CsrRequest req;
+            req.cn = L"self.example.test";
+            req.o = L"測試公司";
+            req.c = L"TW";
+            req.sans = {L"self.example.test", L"localhost", L"127.0.0.1"};
+            req.keyType = t.t;
+            Bytes der, key;
+            std::wstring err;
+            bool ok = GenerateSelfSigned(req, 825, der, key, err);
+            if (!ok) wprintf(L"         錯誤：%ls\n", err.c_str());
+            CertPtr c = ok ? CertFromDer(der.data(), der.size()) : nullptr;
+            CHECK(c && IsSelfSigned(c.get()) && !IsCA(c.get()), (std::wstring(L"產生自簽憑證：") + t.name).c_str());
+            if (!c) continue;
+            int days = DaysRemaining(c.get());
+            CHECK(days >= 824 && days <= 825 && !NotYetValid(c.get()), L"有效期 825 天，且立即生效");
+            Workspace ws;
+            ws.AddCert(c, L"self");
+            ws.AddKey(key, L"self", err);
+            ws.MatchKeys();
+            CHECK(ws.certs[0].keyIndex == 0, L"自簽憑證與私鑰自動配對");
+            std::string pem = CertToPem(c.get()), kp = KeyToPem(key);
+            WriteAll(g_out + L"\\self_" + t.name + L".crt", pem.data(), pem.size());
+            WriteAll(g_out + L"\\self_" + t.name + L".key", kp.data(), kp.size());
+            Bytes jks;
+            ok = ExportJks({c}, &ws.keys[0], L"changeit", L"tomcat", jks, err);
+            CHECK(ok && jks.size() > 100 && jks[0] == 0xFE && jks[1] == 0xED, L"匯出 JKS（自簽 + 私鑰）");
+            WriteAll(g_out + L"\\self_" + t.name + L".jks", jks.data(), jks.size());
+        }
+        CsrRequest req;
+        req.cn = L"x.test";
+        Bytes der, key;
+        std::wstring err;
+        CHECK(!GenerateSelfSigned(req, 0, der, key, err), L"有效天數 0 → 拒絕");
+    }
+
+    wprintf(L"\n== Java KeyStore ==\n");
+    {
+        Workspace ws;
+        Load(ws, L"bundle_shuffled.pem");
+        Load(ws, L"leaf.key");
+        Bytes jks;
+        std::wstring err;
+        CHECK(ExportJks(ChainCerts(ws, false), LeafKey(ws), L"Pa55word", L"tomcat", jks, err), L"匯出 JKS（憑證鏈 2 張 + 私鑰）");
+        WriteAll(g_out + L"\\out.jks", jks.data(), jks.size());
+        Bytes ts;
+        CHECK(ExportJks(ChainCerts(ws, true), nullptr, L"Pa55word", L"", ts, err), L"匯出 JKS truststore（3 張憑證）");
+        WriteAll(g_out + L"\\out_truststore.jks", ts.data(), ts.size());
+        CHECK(!ExportJks(ChainCerts(ws, false), LeafKey(ws), L"12345", L"tomcat", jks, err), L"密碼少於 6 字元 → 拒絕");
+        Workspace ws3;
+        Load(ws3, L"ec.crt");
+        Load(ws3, L"inter.crt");
+        Load(ws3, L"ec.key");
+        CHECK(ExportJks(ChainCerts(ws3, false), LeafKey(ws3), L"Pa55word", L"tomcat", jks, err), L"匯出 JKS（EC 私鑰）");
+        WriteAll(g_out + L"\\out_ec.jks", jks.data(), jks.size());
+    }
+
     wprintf(L"\n結果：%d 通過，%d 失敗\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

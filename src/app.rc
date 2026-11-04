@@ -6,8 +6,8 @@ CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
 IDI_APP ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,1,0,0
+ PRODUCTVERSION 1,1,0,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -16,9 +16,9 @@ BEGIN
     BLOCK "040404b0"
     BEGIN
       VALUE "FileDescription", "憑證鏈工具"
-      VALUE "FileVersion", "1.0.0.0"
+      VALUE "FileVersion", "1.1.0.0"
       VALUE "ProductName", "CertChainTool"
-      VALUE "ProductVersion", "1.0.0.0"
+      VALUE "ProductVersion", "1.1.0.0"
       VALUE "OriginalFilename", "CertChainTool.exe"
     END
   END
@@ -54,6 +54,7 @@ BEGIN
     MENUITEM SEPARATOR
     MENUITEM "PKCS#12 / PFX（含私鑰與憑證鏈）(&P)...", ID_EXP_PFX
     MENUITEM "PKCS#7 / P7B(&7)...", ID_EXP_P7B
+    MENUITEM "Java KeyStore（Tomcat .keystore / .jks）(&J)...", ID_EXP_JKS
     MENUITEM SEPARATOR
     MENUITEM "私鑰 PEM（PKCS#8）(&8)...", ID_EXP_KEY_PKCS8
     MENUITEM "私鑰 PEM（傳統 RSA PKCS#1）(&1)...", ID_EXP_KEY_PKCS1
@@ -83,38 +84,42 @@ BEGIN
   VK_F5, ID_TOOLS_VALIDATE, VIRTKEY
 END
 
-IDD_CSR DIALOGEX 0, 0, 300, 290
+IDD_CSR DIALOGEX 0, 0, 300, 312
 STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "產生 CSR 與私鑰"
+CAPTION "產生 CSR 或自簽憑證"
 FONT 9, "Microsoft JhengHei UI", 400, 0, 0x1
 BEGIN
-  LTEXT           "私鑰：", -1, 10, 10, 70, 10
-  COMBOBOX        IDC_CSR_KEY, 82, 8, 208, 150, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT           "一般名稱 (CN) *：", -1, 10, 30, 70, 10
-  EDITTEXT        IDC_CSR_CN, 82, 28, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "組織 (O)：", -1, 10, 48, 70, 10
-  EDITTEXT        IDC_CSR_O, 82, 46, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "部門 (OU)：", -1, 10, 66, 70, 10
-  EDITTEXT        IDC_CSR_OU, 82, 64, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "城市 (L)：", -1, 10, 84, 70, 10
-  EDITTEXT        IDC_CSR_L, 82, 82, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "州 / 省 (ST)：", -1, 10, 102, 70, 10
-  EDITTEXT        IDC_CSR_ST, 82, 100, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "國家 (C)：", -1, 10, 120, 70, 10
-  EDITTEXT        IDC_CSR_C, 82, 118, 30, 14, ES_AUTOHSCROLL | ES_UPPERCASE
-  LTEXT           "2 碼英文，例如 TW", -1, 118, 120, 120, 10
-  LTEXT           "電子郵件：", -1, 10, 138, 70, 10
-  EDITTEXT        IDC_CSR_EMAIL, 82, 136, 208, 14, ES_AUTOHSCROLL
-  LTEXT           "主體別名 SAN（每行一個網域或 IP，可用 *.example.com）：", -1, 10, 158, 280, 10
-  EDITTEXT        IDC_CSR_SAN, 10, 170, 280, 44, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
-  AUTOCHECKBOX    "自動將 CN 加入 SAN（現在的瀏覽器只檢查 SAN）", IDC_CSR_CNSAN, 10, 218, 280, 12
-  LTEXT           "私鑰密碼：", -1, 10, 238, 70, 10
-  EDITTEXT        IDC_CSR_PWD1, 82, 236, 96, 14, ES_PASSWORD | ES_AUTOHSCROLL
-  LTEXT           "確認：", -1, 184, 238, 26, 10
-  EDITTEXT        IDC_CSR_PWD2, 212, 236, 78, 14, ES_PASSWORD | ES_AUTOHSCROLL
-  LTEXT           "選填。留空則私鑰存成未加密檔案；沿用已載入的私鑰時不會另存私鑰。", -1, 82, 253, 208, 16
-  DEFPUSHBUTTON   "產生", IDOK, 186, 270, 50, 15
-  PUSHBUTTON      "取消", IDCANCEL, 240, 270, 50, 15
+  AUTORADIOBUTTON "產生 CSR（送交 CA 簽發）", IDC_CSR_MODE_CSR, 10, 9, 120, 12, WS_GROUP | WS_TABSTOP
+  AUTORADIOBUTTON "產生自簽憑證，有效", IDC_CSR_MODE_SELF, 134, 9, 84, 12
+  EDITTEXT        IDC_CSR_DAYS, 220, 8, 34, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_GROUP
+  LTEXT           "天", -1, 258, 10, 30, 10
+  LTEXT           "私鑰：", -1, 10, 32, 70, 10
+  COMBOBOX        IDC_CSR_KEY, 82, 30, 208, 150, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT           "一般名稱 (CN) *：", -1, 10, 52, 70, 10
+  EDITTEXT        IDC_CSR_CN, 82, 50, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "組織 (O)：", -1, 10, 70, 70, 10
+  EDITTEXT        IDC_CSR_O, 82, 68, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "部門 (OU)：", -1, 10, 88, 70, 10
+  EDITTEXT        IDC_CSR_OU, 82, 86, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "城市 (L)：", -1, 10, 106, 70, 10
+  EDITTEXT        IDC_CSR_L, 82, 104, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "州 / 省 (ST)：", -1, 10, 124, 70, 10
+  EDITTEXT        IDC_CSR_ST, 82, 122, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "國家 (C)：", -1, 10, 142, 70, 10
+  EDITTEXT        IDC_CSR_C, 82, 140, 30, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+  LTEXT           "2 碼英文，例如 TW", -1, 118, 142, 120, 10
+  LTEXT           "電子郵件：", -1, 10, 160, 70, 10
+  EDITTEXT        IDC_CSR_EMAIL, 82, 158, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "主體別名 SAN（每行一個網域或 IP，可用 *.example.com）：", -1, 10, 180, 280, 10
+  EDITTEXT        IDC_CSR_SAN, 10, 192, 280, 44, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+  AUTOCHECKBOX    "自動將 CN 加入 SAN（現在的瀏覽器只檢查 SAN）", IDC_CSR_CNSAN, 10, 240, 280, 12
+  LTEXT           "私鑰密碼：", -1, 10, 260, 70, 10
+  EDITTEXT        IDC_CSR_PWD1, 82, 258, 96, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT           "確認：", -1, 184, 260, 26, 10
+  EDITTEXT        IDC_CSR_PWD2, 212, 258, 78, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT           "選填。留空則私鑰存成未加密檔案；沿用已載入的私鑰時不會另存私鑰。", IDC_CSR_PWDNOTE, 82, 275, 208, 16
+  DEFPUSHBUTTON   "產生", IDOK, 186, 292, 50, 15
+  PUSHBUTTON      "取消", IDCANCEL, 240, 292, 50, 15
 END
 
 IDD_PASSWORD DIALOGEX 0, 0, 260, 84

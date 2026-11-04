@@ -1436,7 +1436,12 @@ static std::wstring TrimW(const std::wstring& s) {
     return s.substr(b, e - b + 1);
 }
 
-bool GenerateCsr(const CsrRequest& req, Bytes& csrDer, Bytes& keyPkcs8, std::wstring& err) {
+// days <= 0：產生 CSR；days > 0：產生有效 days 天的自簽憑證
+static bool GenerateImpl(const CsrRequest& req, int days, Bytes& outDer, Bytes& keyPkcs8, std::wstring& err) {
+    if (days > 36500) {
+        err = L"有效天數太長（最多 36500 天）";
+        return false;
+    }
     std::wstring cn = TrimW(req.cn), c = TrimW(req.c);
     if (cn.empty()) {
         err = L"一般名稱（CN）為必填";
@@ -1571,17 +1576,22 @@ bool GenerateCsr(const CsrRequest& req, Bytes& csrDer, Bytes& keyPkcs8, std::wst
     exts.push_back({(LPSTR)szOID_KEY_USAGE, TRUE, {(DWORD)kuBlob.size(), kuBlob.data()}});
     EncodeObj(X509_ENHANCED_KEY_USAGE, &eku, ekuBlob);
     exts.push_back({(LPSTR)szOID_ENHANCED_KEY_USAGE, FALSE, {(DWORD)ekuBlob.size(), ekuBlob.data()}});
-    CERT_EXTENSIONS ce = {(DWORD)exts.size(), exts.data()};
-    EncodeObj(X509_EXTENSIONS, &ce, extBlob);
-    CRYPT_ATTR_BLOB ab = {(DWORD)extBlob.size(), extBlob.data()};
-    CRYPT_ATTRIBUTE attr = {(LPSTR)szOID_RSA_certExtensions, 1, &ab};
 
-    CERT_REQUEST_INFO ri = {};
-    ri.dwVersion = CERT_REQUEST_V1;
-    ri.Subject = {(DWORD)subject.size(), subject.data()};
-    ri.SubjectPublicKeyInfo = *pInfo;
-    ri.cAttribute = 1;
-    ri.rgAttribute = &attr;
+    // 自簽憑證另外加上 Basic Constraints（非 CA）、主體與授權金鑰識別碼
+    Bytes bcBlob, skiBlob, akiBlob, keyId;
+    if (days > 0) {
+        CERT_BASIC_CONSTRAINTS2_INFO bc = {FALSE, FALSE, 0};
+        EncodeObj(X509_BASIC_CONSTRAINTS2, &bc, bcBlob);
+        exts.push_back({(LPSTR)szOID_BASIC_CONSTRAINTS2, TRUE, {(DWORD)bcBlob.size(), bcBlob.data()}});
+        HashData(BCRYPT_SHA1_ALGORITHM, Bytes(pInfo->PublicKey.pbData, pInfo->PublicKey.pbData + pInfo->PublicKey.cbData), keyId);
+        CRYPT_DATA_BLOB kid = {(DWORD)keyId.size(), keyId.data()};
+        EncodeObj(X509_OCTET_STRING, &kid, skiBlob);
+        exts.push_back({(LPSTR)szOID_SUBJECT_KEY_IDENTIFIER, FALSE, {(DWORD)skiBlob.size(), skiBlob.data()}});
+        CERT_AUTHORITY_KEY_ID2_INFO aki = {};
+        aki.KeyId = kid;
+        EncodeObj(X509_AUTHORITY_KEY_ID2, &aki, akiBlob);
+        exts.push_back({(LPSTR)szOID_AUTHORITY_KEY_IDENTIFIER2, FALSE, {(DWORD)akiBlob.size(), akiBlob.data()}});
+    }
 
     static BYTE nullParams[] = {0x05, 0x00};
     CRYPT_ALGORITHM_IDENTIFIER sig = {};
@@ -1591,17 +1601,168 @@ bool GenerateCsr(const CsrRequest& req, Bytes& csrDer, Bytes& keyPkcs8, std::wst
     } else {
         sig.pszObjId = (LPSTR)(bits >= 384 ? szOID_ECDSA_SHA384 : szOID_ECDSA_SHA256);
     }
+
+    CERT_EXTENSIONS ce = {(DWORD)exts.size(), exts.data()};
+    CRYPT_ATTR_BLOB ab = {};
+    CRYPT_ATTRIBUTE attr = {(LPSTR)szOID_RSA_certExtensions, 1, &ab};
+    CERT_REQUEST_INFO ri = {};
+    CERT_INFO ci = {};
+    BYTE serial[16];
+    LPCSTR structType;
+    const void* toBeSigned;
+    if (days <= 0) {
+        EncodeObj(X509_EXTENSIONS, &ce, extBlob);
+        ab = {(DWORD)extBlob.size(), extBlob.data()};
+        ri.dwVersion = CERT_REQUEST_V1;
+        ri.Subject = {(DWORD)subject.size(), subject.data()};
+        ri.SubjectPublicKeyInfo = *pInfo;
+        ri.cAttribute = 1;
+        ri.rgAttribute = &attr;
+        structType = X509_CERT_REQUEST_TO_BE_SIGNED;
+        toBeSigned = &ri;
+    } else {
+        // 序號：16 bytes 隨機正整數（CryptoAPI 的整數是 little-endian，最後一個 byte 是最高位）
+        BCryptGenRandom(nullptr, serial, sizeof(serial), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        serial[15] = (BYTE)((serial[15] & 0x7F) | 0x40);
+        ULONGLONG now = NowU64();
+        ULONGLONG nb = now - 5ULL * 60 * 10000000;                  // 提前 5 分鐘，容忍時鐘誤差
+        ULONGLONG na = now + (ULONGLONG)days * 24 * 3600 * 10000000;
+        ci.dwVersion = CERT_V3;
+        ci.SerialNumber = {sizeof(serial), serial};
+        ci.SignatureAlgorithm = sig;
+        ci.Issuer = {(DWORD)subject.size(), subject.data()};
+        ci.Subject = ci.Issuer;
+        ci.NotBefore = {(DWORD)nb, (DWORD)(nb >> 32)};
+        ci.NotAfter = {(DWORD)na, (DWORD)(na >> 32)};
+        ci.SubjectPublicKeyInfo = *pInfo;
+        ci.cExtension = ce.cExtension;
+        ci.rgExtension = ce.rgExtension;
+        structType = X509_CERT_TO_BE_SIGNED;
+        toBeSigned = &ci;
+    }
+    const wchar_t* what = days > 0 ? L"憑證簽章失敗：" : L"CSR 簽章失敗：";
     cb = 0;
-    if (!CryptSignAndEncodeCertificate(h, CERT_NCRYPT_KEY_SPEC, X509_ASN_ENCODING, X509_CERT_REQUEST_TO_BE_SIGNED, &ri, &sig, nullptr, nullptr, &cb)) {
-        err = L"CSR 簽章失敗：" + LastErrorText(GetLastError());
+    if (!CryptSignAndEncodeCertificate(h, CERT_NCRYPT_KEY_SPEC, X509_ASN_ENCODING, structType, toBeSigned, &sig, nullptr, nullptr, &cb)) {
+        err = what + LastErrorText(GetLastError());
         return false;
     }
-    csrDer.resize(cb);
-    if (!CryptSignAndEncodeCertificate(h, CERT_NCRYPT_KEY_SPEC, X509_ASN_ENCODING, X509_CERT_REQUEST_TO_BE_SIGNED, &ri, &sig, nullptr, csrDer.data(), &cb)) {
-        err = L"CSR 簽章失敗：" + LastErrorText(GetLastError());
+    outDer.resize(cb);
+    if (!CryptSignAndEncodeCertificate(h, CERT_NCRYPT_KEY_SPEC, X509_ASN_ENCODING, structType, toBeSigned, &sig, nullptr, outDer.data(), &cb)) {
+        err = what + LastErrorText(GetLastError());
         return false;
     }
-    csrDer.resize(cb);
+    outDer.resize(cb);
+    return true;
+}
+
+bool GenerateCsr(const CsrRequest& req, Bytes& csrDer, Bytes& keyPkcs8, std::wstring& err) {
+    return GenerateImpl(req, 0, csrDer, keyPkcs8, err);
+}
+
+bool GenerateSelfSigned(const CsrRequest& req, int days, Bytes& certDer, Bytes& keyPkcs8, std::wstring& err) {
+    if (days <= 0) {
+        err = L"有效天數必須大於 0";
+        return false;
+    }
+    return GenerateImpl(req, days, certDer, keyPkcs8, err);
+}
+
+// ============================================================================
+// Java KeyStore（JKS）
+// ============================================================================
+// 格式參考 OpenJDK sun.security.provider.JavaKeyStore / KeyProtector：
+//   FEEDFEED, version 2, 項目數, 各項目..., SHA-1(密碼 UTF-16BE + "Mighty Aphrodite" + 前面全部)
+//   私鑰以 SHA-1 串流 XOR 保護：salt(20) + 密文 + SHA-1(密碼 + 明文)
+
+static void PutU16(Bytes& o, unsigned v) { o.push_back((BYTE)(v >> 8)); o.push_back((BYTE)v); }
+static void PutU32(Bytes& o, unsigned long v) { for (int s = 24; s >= 0; s -= 8) o.push_back((BYTE)(v >> s)); }
+static void PutU64(Bytes& o, ULONGLONG v) { for (int s = 56; s >= 0; s -= 8) o.push_back((BYTE)(v >> s)); }
+static void PutUtf(Bytes& o, const std::string& s) { PutU16(o, (unsigned)s.size()); o.insert(o.end(), s.begin(), s.end()); }
+static void PutBytes(Bytes& o, const BYTE* p, size_t n) { PutU32(o, (unsigned long)n); o.insert(o.end(), p, p + n); }
+
+static std::string JksAlias(const std::wstring& s) {
+    std::string a;
+    for (wchar_t ch : s) {
+        if (ch < 128 && (iswalnum(ch) || ch == L'-' || ch == L'.' || ch == L'_')) a += (char)towlower(ch);
+        else if (!a.empty() && a.back() != '-') a += '-';
+    }
+    while (!a.empty() && a.back() == '-') a.pop_back();
+    return a.empty() ? "cert" : a;
+}
+
+bool ExportJks(const std::vector<CertPtr>& chain, const KeyItem* leafKey, const std::wstring& password,
+               const std::wstring& alias, Bytes& out, std::wstring& err) {
+    if (chain.empty()) { err = L"沒有憑證可以匯出"; return false; }
+    if (password.size() < 6) { err = L"Java KeyStore 的密碼至少要 6 個字元（keytool 的限制）"; return false; }
+    Bytes pw;
+    for (wchar_t ch : password) PutU16(pw, ch);   // Java char[] 為 UTF-16，每個字元 big-endian 2 bytes
+
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULONGLONG ms = (FtToU64(ft) - 116444736000000000ULL) / 10000;
+
+    Bytes body;
+    PutU32(body, 0xFEEDFEEDUL);
+    PutU32(body, 2);
+    bool ok = true;
+    if (leafKey) {
+        PutU32(body, 1);
+        // ---- 私鑰保護 ----
+        const Bytes& plain = leafKey->pkcs8;
+        Bytes salt(20), digest, enc(plain.size()), check;
+        BCryptGenRandom(nullptr, salt.data(), (ULONG)salt.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        digest = salt;
+        for (size_t off = 0; ok && off < plain.size(); off += 20) {
+            Bytes in = pw;
+            in.insert(in.end(), digest.begin(), digest.end());
+            ok = HashData(BCRYPT_SHA1_ALGORITHM, in, digest);
+            for (size_t j = 0; ok && j < 20 && off + j < plain.size(); j++) enc[off + j] = plain[off + j] ^ digest[j];
+        }
+        Bytes in = pw;
+        in.insert(in.end(), plain.begin(), plain.end());
+        ok = ok && HashData(BCRYPT_SHA1_ALGORITHM, in, check);
+        SecureZeroMemory(in.data(), in.size());
+        Bytes prot = salt;
+        prot.insert(prot.end(), enc.begin(), enc.end());
+        prot.insert(prot.end(), check.begin(), check.end());
+        Bytes epki = DerSeq({DerSeq({DerOid({0x2B, 0x06, 0x01, 0x04, 0x01, 0x2A, 0x02, 0x11, 0x01, 0x01}),   // 1.3.6.1.4.1.42.2.17.1.1
+                                     DerTlv(0x05, Bytes())}),
+                             DerTlv(0x04, prot)});
+        PutU32(body, 1);   // private key entry
+        PutUtf(body, alias.empty() ? std::string("tomcat") : JksAlias(alias));
+        PutU64(body, ms);
+        PutBytes(body, epki.data(), epki.size());
+        PutU32(body, (unsigned long)chain.size());
+        for (auto& c : chain) {
+            PutUtf(body, "X.509");
+            PutBytes(body, c->pbCertEncoded, c->cbCertEncoded);
+        }
+    } else {
+        // 沒有私鑰：做成只有信任憑證的 truststore
+        PutU32(body, (unsigned long)chain.size());
+        std::vector<std::string> used;
+        for (auto& c : chain) {
+            std::string a = JksAlias(CertDisplayName(c.get())), base = a;
+            for (int n = 2; std::find(used.begin(), used.end(), a) != used.end(); n++) a = base + "-" + std::to_string(n);
+            used.push_back(a);
+            PutU32(body, 2);   // trusted certificate entry
+            PutUtf(body, a);
+            PutU64(body, ms);
+            PutUtf(body, "X.509");
+            PutBytes(body, c->pbCertEncoded, c->cbCertEncoded);
+        }
+    }
+    // ---- 完整性雜湊 ----
+    static const char kWhitener[] = "Mighty Aphrodite";
+    Bytes in = pw, mac;
+    in.insert(in.end(), kWhitener, kWhitener + sizeof(kWhitener) - 1);
+    in.insert(in.end(), body.begin(), body.end());
+    ok = ok && HashData(BCRYPT_SHA1_ALGORITHM, in, mac);
+    SecureZeroMemory(in.data(), in.size());
+    SecureZeroMemory(pw.data(), pw.size());
+    if (!ok) { err = L"KeyStore 雜湊計算失敗"; return false; }
+    body.insert(body.end(), mac.begin(), mac.end());
+    out.swap(body);
     return true;
 }
 

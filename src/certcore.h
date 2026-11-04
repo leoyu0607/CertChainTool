@@ -124,6 +124,10 @@ bool KeyToPkcs1Pem(const Bytes& pkcs8, std::string& out, std::wstring& err);   /
 bool ExportP7b(const std::vector<CertPtr>& certs, Bytes& out, std::wstring& err);
 bool ExportPfx(const std::vector<CertPtr>& chain, const KeyItem* leafKey, const std::wstring& password,
                bool aes256, Bytes& out, std::wstring& err);
+// Java KeyStore（JKS，Tomcat 的 .keystore / .jks）。有私鑰時為一個 PrivateKeyEntry（別名 alias，私鑰密碼 = KeyStore 密碼），
+// 沒有私鑰時每張憑證各為一個 trustedCertEntry（truststore）。密碼至少 6 個字元。
+bool ExportJks(const std::vector<CertPtr>& chain, const KeyItem* leafKey, const std::wstring& password,
+               const std::wstring& alias, Bytes& out, std::wstring& err);
 
 // ---- CSR / 私鑰產生 ----
 enum class KeyType { Rsa2048, Rsa3072, Rsa4096, EcP256, EcP384 };
@@ -137,6 +141,8 @@ struct CsrRequest {
 
 // 產生 CSR（DER）。若未指定 existingKey 會產生新私鑰並由 keyPkcs8 傳回。
 bool GenerateCsr(const CsrRequest& req, Bytes& csrDer, Bytes& keyPkcs8, std::wstring& err);
+// 產生自簽憑證（DER），有效 days 天；欄位與 CSR 相同，另加 Basic Constraints（非 CA）與金鑰識別碼
+bool GenerateSelfSigned(const CsrRequest& req, int days, Bytes& certDer, Bytes& keyPkcs8, std::wstring& err);
 std::string CsrToPem(const Bytes& csrDer);
 // 以 PBES2（PBKDF2-HMAC-SHA256 + AES-256-CBC）加密，輸出 -----BEGIN ENCRYPTED PRIVATE KEY-----
 bool KeyToEncryptedPem(const Bytes& pkcs8, const std::wstring& password, std::string& out, std::wstring& err);

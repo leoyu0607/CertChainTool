@@ -26,9 +26,14 @@
 #define IDC_CSR_CNSAN           1110
 #define IDC_CSR_PWD1            1111
 #define IDC_CSR_PWD2            1112
+#define IDC_CSR_MODE_CSR        1113
+#define IDC_CSR_MODE_SELF       1114
+#define IDC_CSR_DAYS            1115
+#define IDC_CSR_PWDNOTE         1116
 #define IDC_BTN_CSR             2008
 #define ID_TOOLS_CSR            3022
 #define ID_EXP_KEY_ENC          3108
+#define ID_EXP_JKS              3109
 
 // 主視窗控制項
 #define IDC_BTN_OPEN            2001

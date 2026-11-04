@@ -15,16 +15,37 @@ Windows 原生 UI（Win32 + C++）的憑證小工具：把散落的多張憑證�
   - 支援中文主體（UTF-8）、多個 SAN（網域、萬用字元、IPv4/IPv6）
   - 私鑰可用密碼加密（PBES2 / AES-256），CSR 內容自動複製到剪貼簿
   - 新私鑰會留在工具中，拿到 CA 簽發的憑證後拖進來即自動配對
+- **產生自簽憑證**：同一個對話框選「產生自簽憑證」並設定有效天數，憑證與私鑰會直接載入，可馬上匯出成各種格式（測試、內部系統用）
 - **匯出**（可選是否包含根憑證）
   - 完整憑證鏈 PEM（fullchain，nginx / Apache 2.4.8+）
   - 中繼憑證 PEM（CA bundle，Apache SSLCertificateChainFile 等）
   - 憑證鏈 + 私鑰合併 PEM（HAProxy 等）
   - PFX（AES-256，或 3DES 相容舊系統）、P7B
+  - Java KeyStore（JKS，Tomcat 的 `.keystore` / `.jks`）：別名 `tomcat`，私鑰密碼與 KeyStore 密碼相同；沒有私鑰時匯出成 truststore
   - 私鑰 PEM（PKCS#8、傳統 RSA PKCS#1，或以密碼加密）
   - 單張憑證 PEM / DER、複製 PEM 到剪貼簿
 - 雙擊（或 Enter）以 Windows 原生憑證對話框檢視，「憑證路徑」頁會使用已載入的憑證
 
 私鑰只存在記憶體中，不會寫入 Windows 憑證存放區。
+
+### Tomcat 設定範例
+
+```xml
+<!-- Tomcat 8.5 以上 -->
+<Connector port="8443" protocol="org.apache.coyote.http11.Http11NioProtocol" SSLEnabled="true">
+  <SSLHostConfig>
+    <Certificate certificateKeystoreFile="conf/tomcat.keystore"
+                 certificateKeystorePassword="（匯出時設定的密碼）"
+                 certificateKeyAlias="tomcat" />
+  </SSLHostConfig>
+</Connector>
+
+<!-- Tomcat 7 / 8.0 -->
+<Connector port="8443" protocol="HTTP/1.1" SSLEnabled="true" scheme="https" secure="true"
+           keystoreFile="conf/tomcat.keystore" keystorePass="（密碼）" keyAlias="tomcat" />
+```
+
+Java 8u60 以後的 Tomcat 也可以直接用匯出的 PFX（`certificateKeystoreType="PKCS12"`）；舊版 Java 讀不了 AES-256 的 PFX 時，請改用 3DES 或 JKS。
 
 ## 建置
 
