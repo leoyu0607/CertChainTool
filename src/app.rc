@@ -1,0 +1,147 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include "resource.h"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
+IDI_APP ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040404b0"
+    BEGIN
+      VALUE "FileDescription", "憑證鏈工具"
+      VALUE "FileVersion", "1.0.0.0"
+      VALUE "ProductName", "CertChainTool"
+      VALUE "ProductVersion", "1.0.0.0"
+      VALUE "OriginalFilename", "CertChainTool.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0404, 1200
+  END
+END
+
+IDR_MENU MENU
+BEGIN
+  POPUP "檔案(&F)"
+  BEGIN
+    MENUITEM "開啟憑證或私鑰檔案(&O)...\tCtrl+O", ID_FILE_OPEN
+    MENUITEM "開啟資料夾內所有檔案(&D)...", ID_FILE_OPEN_FOLDER
+    MENUITEM "從剪貼簿貼上 PEM(&P)\tCtrl+V", ID_EDIT_PASTE
+    MENUITEM SEPARATOR
+    MENUITEM "結束(&X)", ID_FILE_EXIT
+  END
+  POPUP "編輯(&E)"
+  BEGIN
+    MENUITEM "移除選取項目(&R)\tDel", ID_EDIT_REMOVE
+    MENUITEM "全部清除(&C)", ID_EDIT_CLEAR
+    MENUITEM SEPARATOR
+    MENUITEM "將選取的憑證設為終端憑證(&L)", ID_EDIT_SETLEAF
+    MENUITEM "自動判斷終端憑證(&A)", ID_EDIT_AUTOLEAF
+  END
+  POPUP "匯出(&X)"
+  BEGIN
+    MENUITEM "完整憑證鏈 PEM（fullchain）(&F)...\tCtrl+S", ID_EXP_FULLCHAIN
+    MENUITEM "中繼憑證 PEM（CA bundle，不含終端憑證）(&I)...", ID_EXP_INTERMEDIATES
+    MENUITEM "憑證鏈 + 私鑰 合併 PEM(&K)...", ID_EXP_CHAIN_KEY
+    MENUITEM SEPARATOR
+    MENUITEM "PKCS#12 / PFX（含私鑰與憑證鏈）(&P)...", ID_EXP_PFX
+    MENUITEM "PKCS#7 / P7B(&7)...", ID_EXP_P7B
+    MENUITEM SEPARATOR
+    MENUITEM "私鑰 PEM（PKCS#8）(&8)...", ID_EXP_KEY_PKCS8
+    MENUITEM "私鑰 PEM（傳統 RSA PKCS#1）(&1)...", ID_EXP_KEY_PKCS1
+    MENUITEM "私鑰 PEM（以密碼加密）(&E)...", ID_EXP_KEY_ENC
+    MENUITEM SEPARATOR
+    MENUITEM "複製完整憑證鏈 PEM 到剪貼簿(&C)", ID_EXP_COPY_FULLCHAIN
+  END
+  POPUP "工具(&T)"
+  BEGIN
+    MENUITEM "產生 CSR 與私鑰(&G)...\tCtrl+N", ID_TOOLS_CSR
+    MENUITEM SEPARATOR
+    MENUITEM "補齊並驗證憑證鏈(&V)\tF5", ID_TOOLS_VALIDATE
+    MENUITEM "以 Windows 憑證對話框檢視(&W)\tEnter", ID_TOOLS_VIEW
+  END
+  POPUP "說明(&H)"
+  BEGIN
+    MENUITEM "關於(&A)", ID_HELP_ABOUT
+  END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+  "O", ID_FILE_OPEN, VIRTKEY, CONTROL
+  "V", ID_EDIT_PASTE, VIRTKEY, CONTROL
+  "S", ID_EXP_FULLCHAIN, VIRTKEY, CONTROL
+  "N", ID_TOOLS_CSR, VIRTKEY, CONTROL
+  VK_F5, ID_TOOLS_VALIDATE, VIRTKEY
+END
+
+IDD_CSR DIALOGEX 0, 0, 300, 290
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "產生 CSR 與私鑰"
+FONT 9, "Microsoft JhengHei UI", 400, 0, 0x1
+BEGIN
+  LTEXT           "私鑰：", -1, 10, 10, 70, 10
+  COMBOBOX        IDC_CSR_KEY, 82, 8, 208, 150, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT           "一般名稱 (CN) *：", -1, 10, 30, 70, 10
+  EDITTEXT        IDC_CSR_CN, 82, 28, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "組織 (O)：", -1, 10, 48, 70, 10
+  EDITTEXT        IDC_CSR_O, 82, 46, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "部門 (OU)：", -1, 10, 66, 70, 10
+  EDITTEXT        IDC_CSR_OU, 82, 64, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "城市 (L)：", -1, 10, 84, 70, 10
+  EDITTEXT        IDC_CSR_L, 82, 82, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "州 / 省 (ST)：", -1, 10, 102, 70, 10
+  EDITTEXT        IDC_CSR_ST, 82, 100, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "國家 (C)：", -1, 10, 120, 70, 10
+  EDITTEXT        IDC_CSR_C, 82, 118, 30, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+  LTEXT           "2 碼英文，例如 TW", -1, 118, 120, 120, 10
+  LTEXT           "電子郵件：", -1, 10, 138, 70, 10
+  EDITTEXT        IDC_CSR_EMAIL, 82, 136, 208, 14, ES_AUTOHSCROLL
+  LTEXT           "主體別名 SAN（每行一個網域或 IP，可用 *.example.com）：", -1, 10, 158, 280, 10
+  EDITTEXT        IDC_CSR_SAN, 10, 170, 280, 44, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+  AUTOCHECKBOX    "自動將 CN 加入 SAN（現在的瀏覽器只檢查 SAN）", IDC_CSR_CNSAN, 10, 218, 280, 12
+  LTEXT           "私鑰密碼：", -1, 10, 238, 70, 10
+  EDITTEXT        IDC_CSR_PWD1, 82, 236, 96, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT           "確認：", -1, 184, 238, 26, 10
+  EDITTEXT        IDC_CSR_PWD2, 212, 236, 78, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT           "選填。留空則私鑰存成未加密檔案；沿用已載入的私鑰時不會另存私鑰。", -1, 82, 253, 208, 16
+  DEFPUSHBUTTON   "產生", IDOK, 186, 270, 50, 15
+  PUSHBUTTON      "取消", IDCANCEL, 240, 270, 50, 15
+END
+
+IDD_PASSWORD DIALOGEX 0, 0, 260, 84
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "輸入密碼"
+FONT 9, "Microsoft JhengHei UI", 400, 0, 0x1
+BEGIN
+  LTEXT           "", IDC_PROMPT, 10, 8, 240, 24
+  EDITTEXT        IDC_PWD1, 10, 36, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  AUTOCHECKBOX    "顯示密碼", IDC_SHOWPWD, 10, 60, 100, 12
+  DEFPUSHBUTTON   "確定", IDOK, 146, 60, 50, 15
+  PUSHBUTTON      "取消", IDCANCEL, 200, 60, 50, 15
+END
+
+IDD_PASSWORD_NEW DIALOGEX 0, 0, 260, 132
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "設定 PFX 密碼"
+FONT 9, "Microsoft JhengHei UI", 400, 0, 0x1
+BEGIN
+  LTEXT           "", IDC_PROMPT, 10, 8, 240, 16
+  LTEXT           "密碼：", -1, 10, 30, 50, 10
+  EDITTEXT        IDC_PWD1, 62, 28, 188, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT           "確認密碼：", -1, 10, 50, 50, 10
+  EDITTEXT        IDC_PWD2, 62, 48, 188, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  AUTOCHECKBOX    "顯示密碼", IDC_SHOWPWD, 62, 66, 100, 12
+  AUTOCHECKBOX    "使用 AES-256 加密（建議）", IDC_AES, 10, 84, 240, 12
+  LTEXT           "取消勾選會改用 3DES，可相容 Windows Server 2016 以前的版本與舊版 Java。", IDC_AESNOTE, 22, 97, 228, 16
+  DEFPUSHBUTTON   "確定", IDOK, 146, 112, 50, 15
+  PUSHBUTTON      "取消", IDCANCEL, 200, 112, 50, 15
+END
